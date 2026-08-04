@@ -1,0 +1,27 @@
+# Codeberg CI (Woodpecker) pipeline for the portfolio.
+# On every push to `main`, it builds the Vite app and publishes the built
+# `dist/` to the `pages` repo, which Codeberg Pages serves at
+# https://ethebee3.codeberg.page/.
+#
+# Requires a Woodpecker secret named `codeberg_token`: a Codeberg access
+# token with write access to the `pages` repo. Woodpecker masks its value
+# in the build logs.
+
+when:
+  - event: push
+    branch: main
+
+steps:
+  build-and-deploy:
+    image: node:22
+    environment:
+      CODEBERG_TOKEN:
+        from_secret: codeberg_token
+    commands:
+      - npm ci
+      - npm run build
+      - cd dist
+      - git init -b main
+      - git add -A
+      - git -c user.email=ci@codeberg.org -c user.name="Codeberg CI" commit -m "Deploy ${CI_COMMIT_SHA}"
+      - git push --force "https://ethebee3:$${CODEBERG_TOKEN}@codeberg.org/ethebee3/pages.git" main:main

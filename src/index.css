@@ -6,8 +6,101 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 a { color: inherit; text-decoration: none; }
-a:hover { color: var(--accent); }
+a:hover { color: var(--accent2); }
 ::selection { background: var(--accent); color: #fff; }
+
+/* Full-page particle field, behind all content. */
+.om-particles {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Darkened page edges. Skipped on narrow screens: on a phone the viewport is
+   mostly content, so a vignette just dims the text instead of framing it. */
+.om-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 75% 65% at 50% 50%,
+    transparent 40%,
+    rgba(0, 0, 0, var(--vignette, 0.55)) 100%
+  );
+}
+@media (max-width: 640px) {
+  .om-vignette { display: none; }
+}
+
+/* Click-to-enter gate. Its whole job is to guarantee a user gesture before
+   audio starts, so playback never depends on autoplay permission. */
+.om-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(6, 7, 9, 0.86);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: fadeUp .4s ease both;
+}
+
+/* Same expanding-ring pulse the status dot uses, scaled up for the bubble. */
+@keyframes gatePulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent3, var(--accent)); }
+  70%      { box-shadow: 0 0 0 14px transparent; }
+}
+
+.om-gate-bubble {
+  position: relative;
+  z-index: 1;
+  padding: 15px 28px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--border);
+  animation: gatePulse 2.4s infinite;
+  transition: transform .2s ease, border-color .2s ease, color .2s ease;
+}
+.om-gate:hover .om-gate-bubble {
+  transform: translateY(-2px);
+  border-color: var(--accent3, var(--accent));
+  color: var(--text);
+}
+
+/* Music mute/unmute control. */
+.om-audio-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  color: var(--accent3, var(--accent));
+  transition: transform .2s ease, border-color .2s ease;
+}
+.om-audio-toggle:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent3, var(--accent));
+}
 
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(14px); }
@@ -23,8 +116,8 @@ a:hover { color: var(--accent); }
 }
 
 /* hover states (ported from DC style-hover attributes) */
-.om-social:hover { transform: translateY(-2px); border-color: var(--accent) !important; }
+.om-social:hover { transform: translateY(-2px); border-color: var(--accent3, var(--accent)) !important; }
 .om-lang-tile:hover { transform: translateY(-5px) scale(1.14); }
 .om-game-card:hover { transform: translateY(-6px) scale(1.08); }
 .om-music-row:hover { background: var(--card3) !important; }
-.om-project-card:hover { transform: translateY(-3px); border-color: var(--accent) !important; }
+.om-project-card:hover { transform: translateY(-3px); border-color: var(--accent2) !important; }

@@ -1,233 +1,157 @@
-import { useEffect, useRef, useState } from 'react'
-import ImageSlot from './components/ImageSlot.jsx'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import AmbientAudio from './components/AmbientAudio.jsx'
+import Banner from './components/Banner.jsx'
+import ExternalLink from './components/ExternalLink.jsx'
+import Icon from './components/Icon.jsx'
+import { SECTION_TYPES } from './components/sections/registry.js'
+import { fetchPresence } from './lib/lanyard.js'
+import { startMarquees } from './lib/marquee.js'
+import { getPaletteFromUrl } from './lib/okolors.js'
+import { MONO_BANNER_COLORS, bannerColors, blendDecoration, monoVars, paletteVars, themeVars } from './lib/palette.js'
+import config from './site.config.json'
 
-const DISCORD_ID = '1164594827883728987'
+// All content and tunables (profile, socials, theme, banner effects, tabs and
+// their sections, footer) live in src/site.config.json — edit that, not this.
+// This file owns page state (presence, palette, active tab) and the layout
+// shell; sections render via components/sections/registry.js.
 
-const GAMES = [
-  { label: 'Minecraft', short: 'MC' },
-  { label: 'Geometry Dash', short: 'GD' },
-  { label: 'Rocket League', short: 'RL' },
-  { label: 'osu!', short: 'osu' },
-  { label: 'Add a game', short: '＋' },
-  { label: 'Add a game', short: '＋' },
-]
+const THEME_VARS = themeVars(config.theme)
+const DEFAULT_BANNER_COLORS = config.banner.defaultColors
+const BG = config.background || {}
+const AUDIO = config.audio || {}
 
-const LANGS = [
-  { key: 'html', label: 'HTML' }, { key: 'css', label: 'CSS' }, { key: 'js', label: 'JavaScript' },
-  { key: 'react', label: 'React' }, { key: 'cpp', label: 'C++' }, { key: 'java', label: 'Java' },
-  { key: 'python', label: 'Python' }, { key: 'git', label: 'Git' }, { key: 'github', label: 'GitHub' },
-  { key: 'mysql', label: 'MySQL' },
-]
+// Loaded on demand so the point-cloud's WebGL code isn't in the entry chunk.
+const Particles = lazy(() => import('./components/backgrounds/Particles.jsx'))
 
-// ── color helpers ──────────────────────────────────────────────────────────
-function hslStr(h, s, l) {
-  return `hsl(${h.toFixed(0)} ${s.toFixed(0)}% ${l}%)`
-}
-
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255
-  const max = Math.max(r, g, b), min = Math.min(r, g, b)
-  let h = 0, s = 0, l = (max + min) / 2
-  if (max !== min) {
-    const d = max - min
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
-    switch (max) {
-      case r: h = (g - b) / d + (g < b ? 6 : 0); break
-      case g: h = (b - r) / d + 2; break
-      case b: h = (r - g) / d + 4; break
-    }
-    h *= 60
-  }
-  return [h, s, l]
+// Shared by the social links and the copy-to-clipboard buttons, so the two
+// render identically whichever element type they end up as.
+const socialStyle = {
+  width: '36px',
+  height: '36px',
+  borderRadius: '10px',
+  background: 'var(--card2)',
+  border: '1px solid var(--border)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  transition: 'all .2s ease',
 }
 
 export default function App() {
   const rootRef = useRef(null)
-  const rafRef = useRef(null)
 
   const [state, setState] = useState({
-    avatarUrl: 'https://cdn.discordapp.com/embed/avatars/0.png',
-    displayName: 'username',
-    userTag: '@username',
-    statusText: 'Connecting…',
-    statusColor: '#747f8d',
-    activeTab: 'about',
+    avatarUrl: config.profile.fallbackAvatar,
+    displayName: config.profile.fallbackName,
+    userTag: '@' + (config.profile.username || config.profile.fallbackName),
+    statusText: config.status.connecting.label,
+    statusColor: config.status.connecting.color,
+    activeTab: config.tabs[0]?.id,
     decorationUrl: '',
     hasDecoration: false,
   })
 
-  // ── palette / status application on the root element ─────────────────────
-  const applyStatus = (color) => {
-    if (rootRef.current) rootRef.current.style.setProperty('--status', color)
-  }
+  // Colours handed to the banner effect. `ready` gates the effect so it mounts
+  // once with the correct (avatar-matched) colours instead of flashing defaults.
+  const [banner, setBanner] = useState({ ready: false, colors: DEFAULT_BANNER_COLORS })
+  const revealBanner = (colors, force) =>
+    setBanner((b) => (force || !b.ready ? { ready: true, colors } : b))
 
-  const applyPalette = (h, s) => {
+  const setRootVars = (vars) => {
     const root = rootRef.current
     if (!root) return
-    const set = (k, v) => root.style.setProperty(k, v)
-    const sp = (s * 100).toFixed(0)
-    set('--accent', hslStr(h, +sp, 62))
-    set('--accent2', hslStr((h + 28) % 360, +sp, 56))
-    set('--bg', hslStr(h, 22, 4.5))
-    set('--card', hslStr(h, 18, 8))
-    set('--card2', hslStr(h, 16, 12.5))
-    set('--card3', hslStr(h, 15, 17))
-    set('--border', `hsla(${h.toFixed(0)},25%,82%,0.09)`)
+    for (const [key, value] of Object.entries(vars)) root.style.setProperty(key, value)
   }
 
-  const applyMono = () => {
-    const root = rootRef.current
-    if (!root) return
-    const set = (k, v) => root.style.setProperty(k, v)
-    const H = 225 // cool neutral hue for barely-there tint
-    set('--accent', hslStr(H, 8, 84))
-    set('--accent2', hslStr(H, 10, 60))
-    set('--bg', hslStr(H, 8, 4.5))
-    set('--card', hslStr(H, 7, 8))
-    set('--card2', hslStr(H, 7, 12.5))
-    set('--card3', hslStr(H, 7, 17))
-    set('--border', `hsla(${H},12%,85%,0.09)`)
-  }
-
-  const extractPalette = (url) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => {
-      try {
-        const s = 64
-        const c = document.createElement('canvas')
-        c.width = s; c.height = s
-        const ctx = c.getContext('2d')
-        ctx.drawImage(img, 0, 0, s, s)
-        const data = ctx.getImageData(0, 0, s, s).data
-        // Bucket vibrant pixels by hue; weight by saturation so
-        // the accent reflects the most colorful dominant hue, not a gray average.
-        const buckets = {}
-        for (let i = 0; i < data.length; i += 4) {
-          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3]
-          if (a < 130) continue
-          const [h, sat, l] = rgbToHsl(r, g, b)
-          if (sat < 0.18 || l < 0.15 || l > 0.9) continue // skip grays & extremes
-          const key = Math.round(h / 12) * 12
-          const w = sat * sat // emphasise saturated pixels
-          if (!buckets[key]) buckets[key] = { w: 0, hx: 0, hy: 0, smax: 0, ls: 0, ln: 0 }
-          const bk = buckets[key]
-          const rad = h * Math.PI / 180
-          bk.w += w
-          bk.hx += Math.cos(rad) * w
-          bk.hy += Math.sin(rad) * w
-          bk.smax = Math.max(bk.smax, sat)
-          bk.ls += l * w; bk.ln += w
-        }
-        let best = null
-        for (const k in buckets) {
-          if (!best || buckets[k].w > best.w) best = buckets[k]
-        }
-        if (!best) { applyMono(); return } // grayscale / monochrome avatar
-        let h = Math.atan2(best.hy, best.hx) * 180 / Math.PI
-        if (h < 0) h += 360
-        const sat = Math.min(0.9, Math.max(0.55, best.smax))
-        applyPalette(h, sat)
-      } catch (e) { /* CORS / decode failure — keep defaults */ }
+  // The avatar and its decoration are analysed separately, then blended. The
+  // decoration contributes at reduced strength — see blendDecoration for why
+  // an equal-terms merge would let it take the theme over outright.
+  const resolvePalette = (avatarUrl, decorationUrl) => {
+    const { decorationInfluence = 0.35, accentShift = 0.55 } = config.palette
+    if (!decorationUrl || decorationInfluence <= 0) {
+      return getPaletteFromUrl(avatarUrl).then((res) =>
+        (res && !res.mono ? blendDecoration(res, null, 0, accentShift) : res))
     }
-    img.src = url
+    return Promise.all([getPaletteFromUrl(avatarUrl), getPaletteFromUrl(decorationUrl)])
+      .then(([avatar, deco]) =>
+        (avatar ? blendDecoration(avatar, deco, decorationInfluence, accentShift) : avatar))
   }
 
-  // ── lanyard fetch ────────────────────────────────────────────────────────
-  const fetchLanyard = async () => {
+  // Palette generation via Okolors' approach (Oklab k-means), see lib/okolors.js.
+  // Results are cached per-URL in localStorage, so this is instant on revisit.
+  const extractPalette = (url, decorationUrl) => {
+    resolvePalette(url, decorationUrl).then((res) => {
+      if (!res) { revealBanner(DEFAULT_BANNER_COLORS, false); return } // load/CORS failure
+      if (res.mono) { setRootVars(monoVars()); revealBanner(MONO_BANNER_COLORS, true); return } // greyscale
+      const sat = Math.min(config.palette.maxSaturation, Math.max(config.palette.minSaturation, res.s))
+      setRootVars(paletteVars(res, sat))
+      revealBanner(bannerColors(res, sat), true)
+    })
+  }
+
+  const loadPresence = async () => {
     try {
-      const res = await fetch(`https://api.lanyard.rest/v1/users/${DISCORD_ID}`)
-      const json = await res.json()
-      if (!json.success) throw new Error('lanyard failed')
-      const d = json.data
-      const u = d.discord_user
-      const name = u.global_name || u.username || 'user'
-      const avatar = u.avatar
-        ? `https://cdn.discordapp.com/avatars/${u.id}/${u.avatar}.${u.avatar.startsWith('a_') ? 'gif' : 'png'}?size=256`
-        : `https://cdn.discordapp.com/embed/avatars/${(Number(u.discriminator) || 0) % 5}.png`
-      const statusMap = {
-        online: ['#43b581', 'Online'],
-        idle: ['#faa61a', 'Idle'],
-        dnd: ['#f04747', 'Do Not Disturb'],
-        offline: ['#747f8d', 'Offline'],
-      }
-      const st = statusMap[d.discord_status] || statusMap.offline
-      const deco = u.avatar_decoration_data
+      const presence = await fetchPresence(config.profile.discordId)
+      const st = config.status[presence.statusKey] || config.status.offline
       setState((prev) => ({
         ...prev,
-        avatarUrl: avatar,
-        displayName: name,
-        userTag: '@' + (u.username || name),
-        statusText: st[1],
-        statusColor: st[0],
-        hasDecoration: !!(deco && deco.asset),
-        decorationUrl: deco && deco.asset
-          ? `https://cdn.discordapp.com/avatar-decoration-presets/${deco.asset}.png?size=160&passthrough=true`
-          : '',
+        avatarUrl: presence.avatarUrl,
+        displayName: presence.displayName,
+        userTag: presence.userTag,
+        statusText: st.label,
+        statusColor: st.color,
+        hasDecoration: !!presence.decorationUrl,
+        decorationUrl: presence.decorationUrl,
       }))
-      applyStatus(st[0])
-      extractPalette(avatar)
+      setRootVars({ '--status': st.color })
+      extractPalette(presence.avatarUrl, presence.decorationUrl)
     } catch (e) {
-      setState((prev) => ({ ...prev, statusText: 'Offline', statusColor: '#747f8d' }))
-      applyStatus('#747f8d')
+      const st = config.status.offline
+      setState((prev) => ({ ...prev, statusText: st.label, statusColor: st.color }))
+      setRootVars({ '--status': st.color })
+      revealBanner(DEFAULT_BANNER_COLORS, false)
     }
   }
 
-  // ── marquees ─────────────────────────────────────────────────────────────
-  const startMarquees = () => {
-    const reg = new WeakSet()
-    const tracks = []
-    const scan = () => {
-      document.querySelectorAll('.om-marquee').forEach((el) => {
-        if (reg.has(el)) return
-        reg.add(el)
-        const full = parseFloat(el.dataset.speed) || 36
-        const dir = parseFloat(el.dataset.dir) || -1
-        const st = { el, full, dir, speed: full, target: full, offset: 0, half: 0 }
-        el.addEventListener('mouseenter', () => { st.target = 0 })
-        el.addEventListener('mouseleave', () => { st.target = st.full })
-        tracks.push(st)
-      })
-    }
-    let last = performance.now(), acc = 0
-    const tick = (now) => {
-      const dt = Math.min(0.05, (now - last) / 1000); last = now
-      acc += dt
-      if (acc > 0.4) { acc = 0; scan() }
-      for (let i = tracks.length - 1; i >= 0; i--) {
-        const st = tracks[i]
-        if (!st.el.isConnected) { tracks.splice(i, 1); continue }
-        if (!st.half) { st.half = st.el.scrollWidth / 2; if (!st.half) continue }
-        st.speed += (st.target - st.speed) * Math.min(1, dt * 6) // smooth slow-to-stop
-        st.offset += st.dir * st.speed * dt
-        if (st.offset <= -st.half) st.offset += st.half
-        else if (st.offset >= 0) st.offset -= st.half
-        st.el.style.transform = 'translateX(' + st.offset.toFixed(2) + 'px)'
-      }
-      rafRef.current = requestAnimationFrame(tick)
-    }
-    scan()
-    rafRef.current = requestAnimationFrame(tick)
-  }
-
   useEffect(() => {
-    fetchLanyard()
-    startMarquees()
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+    loadPresence()
+    const stopMarquees = startMarquees()
+    // Fallback: if the avatar never resolves, show the effect with defaults.
+    const t = setTimeout(() => revealBanner(DEFAULT_BANNER_COLORS, false), config.banner.revealTimeoutMs)
+    return () => { clearTimeout(t); stopMarquees() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // apply initial status color once the root is available
-  useEffect(() => {
-    applyStatus(state.statusColor)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // ── derived render values ────────────────────────────────────────────────
+  // ── render ───────────────────────────────────────────────────────────────
   const active = state.activeTab
-  const langs = LANGS.map((l) => ({ ...l, url: `https://skillicons.dev/icons?i=${l.key}` }))
-  const langsLoop = [...langs, ...langs]
-  const gamesLoop = [...GAMES, ...GAMES]
+  const activeTab = config.tabs.find((t) => t.id === active)
+  const Section = activeTab ? SECTION_TYPES[activeTab.type] : null
+
+  // Which social was just copied, so the button can confirm it briefly.
+  const [copied, setCopied] = useState('')
+  const copyToClipboard = async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // clipboard API needs a secure context; fall back for plain http.
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      try { document.execCommand('copy') } catch { /* nothing else to try */ }
+      document.body.removeChild(ta)
+    }
+    setCopied(key)
+    setTimeout(() => setCopied((c) => (c === key ? '' : c)), 1600)
+  }
+
+  const bg = BG
+  // The palette's dark shade — index 3 of the banner quad. Falls back to the
+  // configured default before the avatar has been analysed.
+  const particleColor = banner.colors[3] || DEFAULT_BANNER_COLORS[3]
 
   const tabBtn = (on) => ({
     display: 'flex',
@@ -249,16 +173,8 @@ export default function App() {
     <div
       ref={rootRef}
       style={{
-        '--bg': '#08090c',
-        '--card': '#0f1116',
-        '--card2': '#161922',
-        '--card3': '#1c202b',
-        '--accent': '#5865f2',
-        '--accent2': '#7d5bf2',
-        '--text': '#f4f5f7',
-        '--muted': '#8a92a1',
-        '--border': 'rgba(255,255,255,.06)',
-        '--status': '#43b581',
+        ...THEME_VARS,
+        '--vignette': bg.vignetteStrength ?? 0.55,
         minHeight: '100vh',
         width: '100%',
         display: 'flex',
@@ -269,12 +185,52 @@ export default function App() {
         color: 'var(--text)',
       }}
     >
-      <div style={{ width: '100%', maxWidth: '500px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+      {/* ===== PAGE BACKGROUND ===== */}
+      {bg.particles !== false && (
+        <div className="om-particles" aria-hidden="true">
+          <Suspense fallback={null}>
+            {/* keyed on the colour so a late palette update restarts the field */}
+            <Particles
+              key={particleColor}
+              particleColors={[particleColor]}
+              particleCount={bg.particleCount ?? 800}
+              particleSpread={bg.particleSpread ?? 20}
+              speed={bg.particleSpeed ?? 0.3}
+              particleBaseSize={bg.particleBaseSize ?? 100}
+              moveParticlesOnHover
+              alphaParticles={false}
+              disableRotation
+            />
+          </Suspense>
+        </div>
+      )}
+      {bg.vignette !== false && <div className="om-vignette" aria-hidden="true" />}
+
+      {/* Renders nothing until audio.src is set in site.config.json. */}
+      <AmbientAudio
+        src={AUDIO.src}
+        volume={AUDIO.volume ?? 0.1}
+        loop={AUDIO.loop ?? false}
+        showToggle={AUDIO.showToggle !== false}
+        clickToStart={AUDIO.clickToStart !== false}
+        pauseWhenUnfocused={AUDIO.pauseWhenUnfocused !== false}
+        gateLabel={AUDIO.gateLabel || 'click anywhere to enter'}
+      />
+
+      <div style={{ position: 'relative', zIndex: 2, width: '100%', maxWidth: '500px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
 
         {/* ===== PROFILE CARD ===== */}
         <div style={{ animation: 'fadeUp .6s ease both', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 24px 60px -20px rgba(0,0,0,.7)' }}>
-          <div style={{ height: '130px', background: 'linear-gradient(120deg, var(--accent), var(--accent2))', position: 'relative' }}>
-            <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(400px 200px at 80% 120%, rgba(255,255,255,.18), transparent 60%)' }} />
+          <div style={{ height: '130px', background: 'linear-gradient(120deg, var(--accent), var(--accent2) 55%, var(--accent3, var(--accent2)))', position: 'relative', overflow: 'hidden' }}>
+            <Banner
+              ready={banner.ready}
+              colors={banner.colors}
+              effects={config.banner.effects}
+              shift={config.banner.parallaxShift}
+              overscan={config.banner.overscan}
+            />
+            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'radial-gradient(400px 200px at 80% 120%, rgba(255,255,255,.18), transparent 60%)' }} />
+            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, transparent 55%, rgba(0,0,0,.28))' }} />
           </div>
           <div style={{ padding: '0 22px 22px', position: 'relative' }}>
             <div style={{ position: 'absolute', top: '-46px', left: '22px' }}>
@@ -290,12 +246,27 @@ export default function App() {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '14px', gap: '8px' }}>
-              <a href="#" title="GitHub" className="om-social" style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'var(--card2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .2s ease' }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.6-4.04-1.6-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.34-5.47-5.95 0-1.31.47-2.39 1.24-3.23-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.92 1.23 3.23 0 4.62-2.81 5.64-5.49 5.94.43.37.82 1.1.82 2.22v3.29c0 .32.22.7.83.58A12.01 12.01 0 0 0 24 12.5C24 5.87 18.63.5 12 .5Z" /></svg>
-              </a>
-              <a href="#" title="Email" className="om-social" style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'var(--card2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .2s ease' }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-10 6L2 7" /></svg>
-              </a>
+              {config.profile.socials.map((s) => (
+                // A social with `copy` instead of `url` puts that text on the
+                // clipboard rather than navigating — used for the address, so
+                // it isn't a mailto: and isn't scrapeable as a link.
+                s.copy ? (
+                  <button
+                    key={s.title}
+                    onClick={() => copyToClipboard(s.copy, s.title)}
+                    className="om-social"
+                    title={copied === s.title ? 'Copied' : `Copy ${s.copy}`}
+                    aria-label={`Copy ${s.title.toLowerCase()} address`}
+                    style={{ ...socialStyle, cursor: 'pointer', fontFamily: 'inherit', color: copied === s.title ? 'var(--accent3, var(--accent))' : 'inherit' }}
+                  >
+                    {copied === s.title ? '✓' : <Icon name={s.icon} size={18} />}
+                  </button>
+                ) : (
+                  <ExternalLink key={s.title} href={s.url} title={s.title} className="om-social" style={socialStyle}>
+                    <Icon name={s.icon} size={18} />
+                  </ExternalLink>
+                )
+              ))}
             </div>
 
             <div style={{ marginTop: '4px' }}>
@@ -312,124 +283,20 @@ export default function App() {
         </div>
 
         {/* ===== TAB BAR ===== */}
-        <div style={{ animation: 'fadeUp .6s ease .06s both', display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '6px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '14px', padding: '6px' }}>
-          <button onClick={() => setTab('about')} title="About" style={tabBtn(active === 'about')}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" /></svg>
-          </button>
-          <button onClick={() => setTab('skills')} title="Skills" style={tabBtn(active === 'skills')}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="8 6 3 12 8 18" /><polyline points="16 6 21 12 16 18" /></svg>
-          </button>
-          <button onClick={() => setTab('music')} title="Music" style={tabBtn(active === 'music')}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
-          </button>
-          <button onClick={() => setTab('projects')} title="Projects" style={tabBtn(active === 'projects')}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
-          </button>
+        <div style={{ animation: 'fadeUp .6s ease .06s both', display: 'grid', gridTemplateColumns: `repeat(${config.tabs.length},1fr)`, gap: '6px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '14px', padding: '6px' }}>
+          {config.tabs.map((tab) => (
+            <button key={tab.id} onClick={() => setTab(tab.id)} title={tab.title} style={tabBtn(active === tab.id)}>
+              <Icon name={tab.icon} size={18} />
+            </button>
+          ))}
         </div>
 
-        {/* ===== ABOUT ===== */}
-        {active === 'about' && (
-          <div style={{ animation: 'fadeUp .45s ease both', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '20px 22px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '12px' }}>
-              <span style={{ color: 'var(--accent)', fontSize: '15px' }}>✦</span>
-              <h2 style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--muted)' }}>About Me</h2>
-            </div>
-            <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.7, color: 'var(--text)', textWrap: 'pretty' }}>
-              placeholder — write a sentence or two about who you are, what you love building, and what you're into. This copy is fully editable, so drop your real bio here whenever you're ready.
-            </p>
-          </div>
-        )}
+        {/* ===== ACTIVE SECTION ===== */}
+        {Section && <Section key={activeTab.id} tab={activeTab} />}
 
-        {/* ===== SKILLS + CAROUSEL ===== */}
-        {active === 'skills' && (
-          <div style={{ animation: 'fadeUp .45s ease both', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '20px 0 22px', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '16px', padding: '0 22px' }}>
-              <span style={{ color: 'var(--accent)', fontSize: '15px' }}>⌘</span>
-              <h2 style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--muted)' }}>Interests &amp; Skills</h2>
-            </div>
-            <div style={{ padding: '0 22px 18px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              {['Web Development', 'UI / UX', 'Open Source', 'Game Dev'].map((t) => (
-                <span key={t} style={{ fontSize: '12px', padding: '5px 12px', borderRadius: '20px', background: 'var(--card2)', border: '1px solid var(--border)', color: 'var(--text)' }}>{t}</span>
-              ))}
-            </div>
-            <div style={{ position: 'relative', padding: '12px 0', WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)', maskImage: 'linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)' }}>
-              <div className="om-marquee om-lang" data-dir="-1" data-speed="38" style={{ display: 'flex', gap: '14px', width: 'max-content', willChange: 'transform' }}>
-                {langsLoop.map((lang, i) => (
-                  <div key={i} title={lang.label} className="om-lang-tile" style={{ width: '56px', height: '56px', borderRadius: '14px', background: 'var(--card2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'transform .25s ease' }}>
-                    <img src={lang.url} alt={lang.label} width="34" height="34" style={{ display: 'block' }} />
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', margin: '22px 22px 14px' }}>
-              <span style={{ color: 'var(--accent)', fontSize: '15px' }}>🎮</span>
-              <h2 style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--muted)' }}>Games In Rotation</h2>
-            </div>
-            <div style={{ position: 'relative', padding: '12px 0', WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)', maskImage: 'linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)' }}>
-              <div className="om-marquee om-games" data-dir="1" data-speed="34" style={{ display: 'flex', gap: '14px', width: 'max-content', willChange: 'transform' }}>
-                {gamesLoop.map((game, i) => (
-                  <div key={i} title={game.label} className="om-game-card" style={{ width: '118px', flexShrink: 0, borderRadius: '14px', overflow: 'hidden', background: 'var(--card2)', border: '1px solid var(--border)', transition: 'transform .25s ease' }}>
-                    <div style={{ height: '66px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,var(--accent),var(--accent2))', fontSize: '22px', fontWeight: 800, color: '#0b0d10' }}>{game.short}</div>
-                    <div style={{ padding: '8px 11px', fontSize: '11.5px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{game.label}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+        {config.footer && (
+          <div style={{ textAlign: 'center', fontSize: '11px', color: 'var(--muted)', opacity: 0.6, paddingTop: '4px' }}>{config.footer}</div>
         )}
-
-        {/* ===== MUSIC ===== */}
-        {active === 'music' && (
-          <div style={{ animation: 'fadeUp .45s ease both', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '20px 22px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '16px' }}>
-              <span style={{ color: 'var(--accent)', fontSize: '15px' }}>♫</span>
-              <h2 style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--muted)' }}>Music Taste</h2>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {[
-                { id: 'album1', title: 'ungrateful', artist: 'gryp' },
-                { id: 'album2', title: 'stairs', artist: 'design19' },
-                { id: 'album3', title: 'around the fur', artist: 'deftones' },
-              ].map((a) => (
-                <div key={a.id} className="om-music-row" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px', borderRadius: '12px', background: 'var(--card2)', border: '1px solid var(--border)', transition: 'background .2s ease' }}>
-                  <ImageSlot shape="rounded" radius={8} placeholder="Cover" style={{ width: '52px', height: '52px', flexShrink: 0 }} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: '14px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.title}</div>
-                    <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>{a.artist}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ===== PROJECTS ===== */}
-        {active === 'projects' && (
-          <div style={{ animation: 'fadeUp .45s ease both', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '20px 22px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '16px' }}>
-              <span style={{ color: 'var(--accent)', fontSize: '15px' }}>▶</span>
-              <h2 style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--muted)' }}>Current Projects</h2>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              {[
-                { id: 'proj1', title: 'Project One' },
-                { id: 'proj2', title: 'Project Two' },
-                { id: 'proj3', title: 'Project Three' },
-                { id: 'proj4', title: 'Project Four' },
-              ].map((p) => (
-                <div key={p.id} className="om-project-card" style={{ background: 'var(--card2)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden', transition: 'transform .2s ease,border-color .2s ease' }}>
-                  <ImageSlot shape="rect" placeholder="Preview" style={{ width: '100%', height: '88px', display: 'block' }} />
-                  <div style={{ padding: '12px' }}>
-                    <div style={{ fontSize: '14px', fontWeight: 700 }}>{p.title}</div>
-                    <div style={{ fontSize: '11.5px', color: 'var(--muted)', marginTop: '4px', lineHeight: 1.5 }}>placeholder — one line about it.</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div style={{ textAlign: 'center', fontSize: '11px', color: 'var(--muted)', opacity: 0.6, paddingTop: '4px' }}>palette pulled live from your discord avatar via lanyard</div>
 
       </div>
     </div>
